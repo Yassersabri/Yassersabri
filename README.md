@@ -7,7 +7,9 @@ A schedule review, assessment, recovery and reporting tool built for **SANS Inte
 | Area | Capability |
 |---|---|
 | **Project register** | Records each project's contract data (code, client, consultant, sector, location, contract type and value, NTP, contract completion, data date, LD rate and cap, daily overheads, PM, planner), its work calendar, scope, a delay events record and an update history. Includes a company-wide portfolio view. |
-| **Schedule import** | Primavera P6 `.xer`, MS Project `.xml`, and Excel CSV or pasted rows. A CSV template is included. Activities can also be added or edited in the tool. |
+| **Schedule import** | Primavera P6 `.xer`, MS Project `.xml`, and Excel CSV or pasted rows. A CSV template is included. Activities can also be added or edited in the tool. XER import picks the largest project in a multi-project file, reads the P6 calendar (work week and holidays), WBS tree, resources and costs, and handles UTF-8 or Arabic Windows-1256 encoding. |
+| **XER export** | Writes a P6-importable XER of the updated schedule (Schedule and Report tabs) or of any recovery option (Recovery tab). It reuses the original P6 project, WBS, calendar and activity IDs, so the file can update the existing project in P6. It carries progress, remaining durations, early/late dates, total float, constraints, relationships with lags, resources and the calendar with holidays. In the shared page the .xer arrives inside a .zip; extract it before importing. |
+| **Appearance** | A White / Black switch in the header. The white theme uses a low-glare sage-white palette for long working sessions. |
 | **CPM engine** | Forward and backward pass with progress at the data date (retained logic), FS/SS/FF/SF links with lags, SNET/SNLT/FNET/FNLT/MSO/MFO constraints, and loop detection. |
 | **Saudi calendars** | 5-day (Sun–Thu), 6-day (Sat–Thu) or 7-day week; Founding Day, National Day, Eid al-Fitr and Eid al-Adha; Hijri (Umm al-Qura) dates in reports. |
 | **Review & assessment** | DCMA 14-point check, SPI, BEI and CPLI, a schedule quality score and an overall health rating. |

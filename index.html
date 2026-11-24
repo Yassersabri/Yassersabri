@@ -4,31 +4,32 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
 /* Layout: dark control band on top, tab rail, single working column (max 1320px) of panels; tables & Gantt scroll inside their own frames. */
+/* Light theme is deliberately low-glare: sage-tinted off-white ground, softened ink, quiet lines. Dark theme is near-black. */
 :root {
-  --bg: #f2f5f5; --surface: #ffffff; --sunk: #e9eff0; --ink: #14232a; --muted: #586a72; --line: #d3dde0;
-  --band: #0f2a2e; --band-ink: #e6f0f0; --band-muted: #9fb8bb;
-  --accent: #0f6466; --accent-ink: #ffffff; --accent-soft: #dfeeee;
-  --crit: #b3342a; --crit-soft: #f7e2df; --warn: #9a5f08; --warn-soft: #f9edd6; --ok: #2b7640; --ok-soft: #e0f0e4;
-  --bar: #3d7d8a; --bl: #b8c6cb; --done: #7d9aa0;
+  --bg: #f3f6f4; --surface: #fbfcfb; --sunk: #edf2ef; --ink: #2c3b40; --muted: #687a80; --line: #dde5e2;
+  --band: #e6eeeb; --band-ink: #24393d; --band-muted: #5d7277; --band-line: #c5d3cf;
+  --accent: #2f7672; --accent-ink: #ffffff; --accent-soft: #e1eeeb;
+  --crit: #b0544b; --crit-soft: #f5e6e3; --warn: #9c6b22; --warn-soft: #f6eedf; --ok: #437d55; --ok-soft: #e3efe6;
+  --bar: #6f9ea6; --bl: #cbd5d2; --done: #a2b4b3;
   --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   --f-head: "IBM Plex Sans Condensed", "Arial Narrow", "Segoe UI", sans-serif;
   --f-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
-  --r: 6px;
+  --r: 8px;
 }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
-  --bg: #0d1517; --surface: #142024; --sunk: #101a1d; --ink: #e2ecee; --muted: #93a6ac; --line: #28393e;
-  --band: #091113; --band-ink: #e2ecee; --band-muted: #86a0a4;
-  --accent: #52b5b1; --accent-ink: #052223; --accent-soft: #17343a;
-  --crit: #f0786c; --crit-soft: #3b1f1c; --warn: #e3ab4f; --warn-soft: #382a12; --ok: #6cc585; --ok-soft: #183222;
-  --bar: #5ea6b3; --bl: #3f535a; --done: #57747a; color-scheme: dark; } }
+  --bg: #0a0d0e; --surface: #121718; --sunk: #0e1213; --ink: #e3eaeb; --muted: #94a4a8; --line: #252e31;
+  --band: #000000; --band-ink: #e3eaeb; --band-muted: #889a9e; --band-line: #34403f;
+  --accent: #5cbab5; --accent-ink: #04201f; --accent-soft: #15302f;
+  --crit: #f07a6e; --crit-soft: #361c19; --warn: #e2ab52; --warn-soft: #33270f; --ok: #6ec686; --ok-soft: #162e1f;
+  --bar: #5fa6b2; --bl: #3a4a50; --done: #54706f; color-scheme: dark; } }
 :root[data-theme="dark"] {
-  --bg: #0d1517; --surface: #142024; --sunk: #101a1d; --ink: #e2ecee; --muted: #93a6ac; --line: #28393e;
-  --band: #091113; --band-ink: #e2ecee; --band-muted: #86a0a4;
-  --accent: #52b5b1; --accent-ink: #052223; --accent-soft: #17343a;
-  --crit: #f0786c; --crit-soft: #3b1f1c; --warn: #e3ab4f; --warn-soft: #382a12; --ok: #6cc585; --ok-soft: #183222;
-  --bar: #5ea6b3; --bl: #3f535a; --done: #57747a; color-scheme: dark; }
+  --bg: #0a0d0e; --surface: #121718; --sunk: #0e1213; --ink: #e3eaeb; --muted: #94a4a8; --line: #252e31;
+  --band: #000000; --band-ink: #e3eaeb; --band-muted: #889a9e; --band-line: #34403f;
+  --accent: #5cbab5; --accent-ink: #04201f; --accent-soft: #15302f;
+  --crit: #f07a6e; --crit-soft: #361c19; --warn: #e2ab52; --warn-soft: #33270f; --ok: #6ec686; --ok-soft: #162e1f;
+  --bar: #5fa6b2; --bl: #3a4a50; --done: #54706f; color-scheme: dark; }
 * { box-sizing: border-box; }
-body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 14px; line-height: 1.5; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 14px; line-height: 1.55; }
 body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--band); }
 h1, h2, h3, h4 { font-family: var(--f-head); text-wrap: balance; margin: 0; letter-spacing: .01em; }
 h2 { font-size: 1.35rem; font-weight: 700; }
@@ -40,7 +41,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .wrap { max-width: 1320px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 
 /* top band */
-.band { background: var(--band); color: var(--band-ink); }
+.band { background: var(--band); color: var(--band-ink); border-bottom: 1px solid var(--band-line); }
 .band .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding-block: 12px; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .mark { font-family: var(--f-head); font-weight: 700; font-size: 1.05rem; letter-spacing: .14em; padding: 3px 8px; border: 1.5px solid var(--band-ink); border-radius: 3px; }
@@ -50,11 +51,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .band .sp { flex: 1; }
 .switch { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .switch label { font-size: .75rem; color: var(--band-muted); text-transform: uppercase; letter-spacing: .08em; }
-.switch select { background: transparent; color: var(--band-ink); border: 1px solid var(--band-muted); border-radius: var(--r); padding: 6px 8px; max-width: 360px; min-width: 0; }
+.switch select { background: transparent; color: var(--band-ink); border: 1px solid var(--band-line); border-radius: var(--r); padding: 6px 8px; max-width: 360px; min-width: 0; }
 .switch select option { color: #14232a; background: #fff; }
 .store { font-size: .75rem; color: var(--band-muted); display: flex; align-items: center; gap: 6px; }
 .store i { width: 8px; height: 8px; border-radius: 50%; background: var(--band-muted); display: inline-block; }
-.store.on i { background: #6cc585; }
+.store.on i { background: var(--ok); }
+.theme { display: inline-flex; border: 1px solid var(--band-line); border-radius: 20px; padding: 2px; gap: 2px; }
+.theme button { border: 0; background: transparent; color: var(--band-muted); padding: 4px 12px; border-radius: 16px; cursor: pointer; font-size: .8rem; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+.theme button i { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid currentColor; display: inline-block; }
+.theme button[data-v="dark"] i { background: currentColor; }
+.theme button[aria-pressed="true"] { background: var(--surface); color: var(--band-ink); box-shadow: 0 0 0 1px var(--band-line); }
 
 /* tabs */
 .tabs { background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; }
@@ -114,7 +120,7 @@ main.wrap { padding-block: 20px 60px; display: grid; gap: 18px; }
 .tw.tall { max-height: 560px; overflow-y: auto; }
 table { border-collapse: collapse; width: 100%; font-size: .86rem; }
 th { text-align: left; font-family: var(--f-head); font-weight: 600; font-size: .8rem; letter-spacing: .03em; color: var(--muted); background: var(--sunk); padding: 8px 10px; position: sticky; top: 0; z-index: 1; white-space: nowrap; border-bottom: 1px solid var(--line); }
-td { padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td { padding: 8px 11px; border-bottom: 1px solid var(--line); vertical-align: top; }
 tbody tr:last-child td { border-bottom: 0; }
 tr.click { cursor: pointer; } tr.click:hover td { background: var(--accent-soft); }
 td.num, th.num { text-align: right; white-space: nowrap; }
@@ -216,6 +222,7 @@ details > summary { cursor: pointer; color: var(--accent); font-size: .82rem; }
   <div class="brand"><span class="mark">SANS</span><div class="brand-t"><b>Schedule Control</b><span>SANS International · Planning &amp; Project Controls</span></div></div>
   <div class="sp"></div>
   <div class="switch"><label for="projSel">Project</label><select id="projSel" aria-label="Select project"></select></div>
+  <div class="theme" role="group" aria-label="Background"><button type="button" data-act="theme" data-v="light" aria-pressed="false"><i></i>White</button><button type="button" data-act="theme" data-v="dark" aria-pressed="false"><i></i>Black</button></div>
   <div class="store" id="storeBadge"><i></i><span>Saved in this browser</span></div>
 </div></div>
 <nav class="tabs" aria-label="Sections"><div class="wrap" id="tabs"></div></nav>

@@ -332,53 +332,248 @@
     return { activities: acts, info: {}, source: 'CSV' };
   }
 
-  function fromXER(text) {
+  /* ---------- Primavera P6 XER ---------- */
+  function xerTables(text) {
     const tables = {}; let cur = null;
     for (const line of text.split(/\r?\n/)) {
       if (line.startsWith('%T')) { cur = { name: line.split('\t')[1].trim(), fields: [], rows: [] }; tables[cur.name] = cur; }
-      else if (line.startsWith('%F') && cur) cur.fields = line.split('\t').slice(1);
-      else if (line.startsWith('%R') && cur) { const v = line.split('\t').slice(1); const o = {}; cur.fields.forEach((f, i) => o[f] = v[i]); cur.rows.push(o); }
+      else if (line.startsWith('%F') && cur) cur.fields = line.split('\t').slice(1).map(f => f.trim());
+      else if (line.startsWith('%R') && cur) { const v = line.split('\t').slice(1); const o = {}; cur.fields.forEach((f, i) => o[f] = v[i] ?? ''); cur.rows.push(o); }
     }
+    return tables;
+  }
+  // P6 clndr_data: days 1=Sunday..7=Saturday; exceptions as days since 1899-12-30
+  function parseClndr(data) {
+    const out = { work: null, holidays: [] };
+    if (!data) return out;
+    const dow = data.indexOf('DaysOfWeek');
+    if (dow >= 0) {
+      const exc = data.indexOf('Exceptions', dow); const end = exc > 0 ? exc : data.length;
+      const work = [];
+      for (let d = 1; d <= 7; d++) {
+        const s = data.indexOf(`(0||${d}()(`, dow);
+        if (s < 0 || s > end) { work.push(0); continue; }
+        let e = d < 7 ? data.indexOf(`(0||${d + 1}()(`, s) : end; if (e < 0 || e > end) e = end;
+        work.push(/s\|\d/.test(data.slice(s, e)) ? 1 : 0);
+      }
+      if (work.some(Boolean)) out.work = work;
+    }
+    const re = /\(d\|(\d+)\)\(\s*\)/g; let m;
+    const ex = data.indexOf('Exceptions');
+    if (ex >= 0) while ((m = re.exec(data.slice(ex)))) out.holidays.push(iso(+m[1] - 25569));
+    return out;
+  }
+  function weekKey(work) {
+    if (!work) return null;
+    for (const [k, w] of Object.entries(WEEKS)) if (w.days.join('') === work.join('')) return k;
+    const n = work.reduce((s, x) => s + x, 0);
+    return n >= 7 ? '7d' : n === 6 ? '6d' : '5d';
+  }
+
+  function fromXER(text) {
+    const tables = xerTables(text);
     if (!tables.TASK) throw new Error('No TASK table found. Export the project from Primavera P6 as an .xer file.');
-    const proj = (tables.PROJECT && tables.PROJECT.rows[0]) || {};
-    let hpd = 8;
-    if (tables.CALENDAR) { const c = tables.CALENDAR.rows.find(r => r.default_flag === 'Y') || tables.CALENDAR.rows[0]; if (c && +c.day_hr_cnt) hpd = +c.day_hr_cnt; }
-    const wbs = new Map(); (tables.PROJWBS ? tables.PROJWBS.rows : []).forEach(w => wbs.set(w.wbs_id, w.wbs_short_name || w.wbs_name));
+    const projs = tables.PROJECT ? tables.PROJECT.rows : [];
+    const count = new Map(); tables.TASK.rows.forEach(t => count.set(t.proj_id, (count.get(t.proj_id) || 0) + 1));
+    const proj = projs.slice().sort((a, b) => (count.get(b.proj_id) || 0) - (count.get(a.proj_id) || 0))[0] || {};
+    const notes = [];
+    if (projs.length > 1) notes.push(`The file holds ${projs.length} projects; "${proj.proj_short_name}" (the largest) was imported.`);
+    const inProj = t => !proj.proj_id || !t.proj_id || t.proj_id === proj.proj_id;
+    const cals = tables.CALENDAR ? tables.CALENDAR.rows : [];
+    const tasksP = tables.TASK.rows.filter(inProj);
+    const calUse = new Map(); tasksP.forEach(t => calUse.set(t.clndr_id, (calUse.get(t.clndr_id) || 0) + 1));
+    const mainCalId = proj.clndr_id || [...calUse].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const cal = cals.find(c => c.clndr_id === mainCalId) || cals.find(c => c.default_flag === 'Y') || cals[0] || {};
+    if (calUse.size > 1) notes.push(`${calUse.size} calendars are used; the project calendar "${cal.clndr_name || mainCalId}" is applied to all activities.`);
+    const hpd = +cal.day_hr_cnt || 8;
+    const pc = parseClndr(cal.clndr_data);
+    const wbsRows = (tables.PROJWBS ? tables.PROJWBS.rows : []).filter(inProj);
+    const wbs = new Map(); wbsRows.forEach(w => wbs.set(w.wbs_id, w));
     const rsrc = new Map(); (tables.RSRC ? tables.RSRC.rows : []).forEach(r => rsrc.set(r.rsrc_id, r.rsrc_short_name || r.rsrc_name));
     const tRes = new Map(), tCost = new Map();
     (tables.TASKRSRC ? tables.TASKRSRC.rows : []).forEach(r => {
       if (!tRes.has(r.task_id)) tRes.set(r.task_id, []);
-      const nm = rsrc.get(r.rsrc_id); if (nm) tRes.get(r.task_id).push(nm);
+      const nm = rsrc.get(r.rsrc_id); if (nm && !tRes.get(r.task_id).includes(nm)) tRes.get(r.task_id).push(nm);
       tCost.set(r.task_id, (tCost.get(r.task_id) || 0) + (+r.target_cost || 0));
     });
     const code = new Map(); tables.TASK.rows.forEach(t => code.set(t.task_id, t.task_code));
     const preds = new Map();
     const PT = { PR_FS: 'FS', PR_SS: 'SS', PR_FF: 'FF', PR_SF: 'SF' };
+    let external = 0;
     (tables.TASKPRED ? tables.TASKPRED.rows : []).forEach(p => {
       if (!preds.has(p.task_id)) preds.set(p.task_id, []);
+      if (p.pred_proj_id && proj.proj_id && p.pred_proj_id !== proj.proj_id) { external++; return; }
       if (code.has(p.pred_task_id)) preds.get(p.task_id).push({ id: code.get(p.pred_task_id), t: PT[p.pred_type] || 'FS', lag: Math.round((+p.lag_hr_cnt || 0) / hpd) });
     });
+    if (external) notes.push(`${external} links to other projects were ignored.`);
     const CT = { CS_MSO: 'MSO', CS_MEO: 'MFO', CS_MSOA: 'SNET', CS_MSOB: 'SNLT', CS_MEOA: 'FNET', CS_MEOB: 'FNLT' };
-    const acts = tables.TASK.rows.filter(t => t.task_type !== 'TT_LOE' && t.task_type !== 'TT_WBS').map(t => {
+    const skipped = tasksP.filter(t => t.task_type === 'TT_LOE' || t.task_type === 'TT_WBS').length;
+    if (skipped) notes.push(`${skipped} level-of-effort / WBS summary activities were excluded from the analysis.`);
+    const acts = tasksP.filter(t => t.task_type !== 'TT_LOE' && t.task_type !== 'TT_WBS').map(t => {
       const ms = t.task_type === 'TT_Mile' || t.task_type === 'TT_FinMile';
       const st = t.status_code;
+      const w = wbs.get(t.wbs_id);
       return {
-        id: t.task_code, name: t.task_name, wbs: wbs.get(t.wbs_id) || '',
+        id: t.task_code, name: t.task_name, wbs: w ? (w.wbs_name || w.wbs_short_name) : '',
         dur: Math.round((+t.target_drtn_hr_cnt || 0) / hpd), rem: st === 'TK_Complete' ? 0 : Math.round((+t.remain_drtn_hr_cnt || 0) / hpd),
         pct: st === 'TK_Complete' ? 100 : Math.round(+t.phys_complete_pct || 0),
         as: parseDate(t.act_start_date), af: parseDate(t.act_end_date),
         bs: parseDate(t.target_start_date), bf: parseDate(t.target_end_date),
         res: (tRes.get(t.task_id) || []).join(', '), cost: tCost.get(t.task_id) || null,
         cons: CT[t.cstr_type] || '', consDate: parseDate(t.cstr_date), ms, preds: preds.get(t.task_id) || [],
+        xid: t.task_id, xwbs: t.wbs_id, xtype: t.task_type,
       };
     });
+    const calendar = pc.work ? { week: weekKey(pc.work), ksaHolidays: pc.holidays.length === 0, holidays: pc.holidays } : null;
+    if (calendar && pc.work && WEEKS[calendar.week].days.join('') !== pc.work.join('')) notes.push(`The P6 work week was mapped to the nearest standard week (${WEEKS[calendar.week].label}).`);
+    notes.push('XER planned (target) dates were loaded as baseline dates. Replace them with your approved baseline if it is held separately.');
     return {
-      activities: acts, source: 'Primavera P6 (XER)',
-      info: { code: proj.proj_short_name || '', dataDate: parseDate(proj.last_recalc_date || proj.next_data_date), start: parseDate(proj.plan_start_date), plannedFinish: parseDate(proj.scd_end_date || proj.plan_end_date) },
-      notes: ['XER target dates were loaded as baseline dates. Replace them with your approved baseline if a separate baseline exists.'],
+      activities: acts, source: 'Primavera P6 (XER)', notes,
+      info: {
+        code: proj.proj_short_name || '', name: proj.proj_short_name || '',
+        dataDate: parseDate(proj.last_recalc_date || proj.next_data_date), start: parseDate(proj.plan_start_date), plannedFinish: parseDate(proj.plan_end_date || proj.scd_end_date),
+        calendar,
+        xer: {
+          projId: proj.proj_id || '', projShort: proj.proj_short_name || '', clndrId: cal.clndr_id || '', clndrName: cal.clndr_name || '', hpd,
+          wbs: wbsRows.map(w => ({ id: w.wbs_id, parent: w.parent_wbs_id, short: w.wbs_short_name, name: w.wbs_name, seq: w.seq_num, node: w.proj_node_flag })),
+          version: (text.split(/\r?\n/)[0] || '').split('\t')[1] || '',
+        },
+      },
     };
   }
 
+  function clndrData(week, holidays, hpd) {
+    const days = (WEEKS[week] || WEEKS['6d']).days;
+    const am = '08:00|f|12:00', endH = Math.min(23, 13 + Math.max(1, hpd - 4));
+    const pm = `13:00|f|${String(endH).padStart(2, '0')}:00`;
+    let s = '(0||CalendarData()((0||DaysOfWeek()(';
+    days.forEach((w, i) => { s += w ? `(0||${i + 1}()((0||0(s|${am})())(0||1(s|${pm})())))` : `(0||${i + 1}()())`; });
+    s += '))(0||VIEW(ShowTotal|Y)())(0||Exceptions()(';
+    holidays.forEach((d, k) => { s += `(0||${k}(d|${d + 25569})())`; });
+    return s + '))))';
+  }
+
+  // Write a P6-importable XER for the project and (updated / revised) schedule.
+  function toXER(P, acts, r, opts) {
+    const o = opts || {};
+    const X = P.xer || {};
+    const hpd = X.hpd || 8;
+    const clean = v => String(v ?? '').replace(/[\t\r\n]+/g, ' ');
+    const num = v => (Math.round((+v || 0) * 100) / 100).toString();
+    const D = (d, t) => d ? `${d} ${t}` : '';
+    const cal = P.calendar || { week: '6d', ksaHolidays: true, holidays: [] };
+    const projId = X.projId || '1001', clndrId = X.clndrId || '1001';
+    const short = clean(X.projShort || P.code || 'SANS-PROJECT').slice(0, 40);
+    let nextId = 900000;
+    const used = new Set();
+    const newId = () => { while (used.has(String(nextId))) nextId++; used.add(String(nextId)); return String(nextId++); };
+    // WBS
+    const wbsRows = (X.wbs || []).map(w => Object.assign({}, w));
+    wbsRows.forEach(w => used.add(String(w.id)));
+    let root = wbsRows.find(w => w.node === 'Y');
+    if (!root) { root = { id: newId(), parent: '', short, name: P.name || short, seq: 0, node: 'Y' }; wbsRows.unshift(root); }
+    const byName = new Map(wbsRows.map(w => [w.name || w.short, w.id]));
+    const wbsIds = new Set(wbsRows.map(w => String(w.id)));
+    const wbsOf = a => {
+      if (a.xwbs && wbsIds.has(String(a.xwbs))) return a.xwbs;
+      const nm = (a.wbs || '').trim() || 'Unassigned';
+      if (!byName.has(nm)) { const id = newId(); wbsRows.push({ id, parent: root.id, short: nm.slice(0, 20), name: nm, seq: wbsRows.length, node: 'N' }); byName.set(nm, id); wbsIds.add(id); }
+      return byName.get(nm);
+    };
+    // task ids
+    acts.forEach(a => { if (a.xid && /^\d+$/.test(a.xid)) used.add(String(a.xid)); });
+    const seen = new Set();
+    const tid = acts.map(a => { const ok = a.xid && /^\d+$/.test(a.xid) && !seen.has(a.xid); const id = ok ? String(a.xid) : newId(); seen.add(id); return id; });
+    const idx = new Map(acts.map((a, i) => [a.id, i]));
+    const CT = { MSO: 'CS_MSO', MFO: 'CS_MEO', SNET: 'CS_MSOA', SNLT: 'CS_MSOB', FNET: 'CS_MEOA', FNLT: 'CS_MEOB' };
+    const ST = { C: 'TK_Complete', IP: 'TK_Active', NS: 'TK_NotStart' };
+    const day = i => iso(r.cal.date(i));
+    const dd = iso(r.ddDay);
+    const lines = [];
+    const T = (name, fields, rows) => { lines.push('%T\t' + name, '%F\t' + fields.join('\t')); rows.forEach(v => lines.push('%R\t' + v.map(clean).join('\t'))); };
+    const today = new Date().toISOString().slice(0, 10);
+    lines.push(['ERMHDR', X.version || '19.12', today, 'Project', 'admin', 'SANS Schedule Control', 'dbxDatabaseNoName', 'Project Management', 'SAR'].join('\t'));
+    T('CURRTYPE', ['curr_id', 'decimal_digit_cnt', 'curr_symbol', 'decimal_symbol', 'digit_group_symbol', 'pos_curr_fmt_type', 'neg_curr_fmt_type', 'curr_type', 'curr_short_name', 'group_digit_cnt', 'base_exch_rate'],
+      [['1', '2', 'SAR', '.', ',', '#1.1', '(#1.1)', 'Saudi Riyal', 'SAR', '3', '1']]);
+    const hol = new Set();
+    if (cal.ksaHolidays !== false) for (const [d, n] of KSA_HOLIDAYS) for (let i = 0; i < n; i++) hol.add(dn(d) + i);
+    (cal.holidays || []).forEach(h => { const d = dn(parseDate(h)); if (d != null) hol.add(d); });
+    T('CALENDAR', ['clndr_id', 'default_flag', 'clndr_name', 'proj_id', 'base_clndr_id', 'last_chng_date', 'clndr_type', 'day_hr_cnt', 'week_hr_cnt', 'month_hr_cnt', 'year_hr_cnt', 'rsrc_private', 'clndr_data'],
+      [[clndrId, 'N', X.clndrName || `SANS ${(WEEKS[cal.week] || WEEKS['6d']).label}`, projId, '', D(today, '00:00'), 'CA_Project', hpd, hpd * (WEEKS[cal.week] || WEEKS['6d']).days.reduce((s, x) => s + x, 0), hpd * 26, hpd * 300, 'N', clndrData(cal.week, [...hol].sort((a, b) => a - b), hpd)]]);
+    T('PROJECT', ['proj_id', 'proj_short_name', 'clndr_id', 'plan_start_date', 'plan_end_date', 'scd_end_date', 'last_recalc_date', 'sum_data_date', 'def_duration_type', 'def_complete_pct_type', 'task_code_base', 'task_code_step', 'def_task_type', 'critical_drtn_hr_cnt', 'critical_path_type'],
+      [[projId, short, clndrId, D(P.start, '08:00'), D(P.contractFinish || r.finish, '17:00'), D(r.finish, '17:00'), D(dd, '08:00'), D(dd, '08:00'), 'DT_FixedDUR2', 'CP_Phys', '1000', '10', 'TT_Task', '0', 'CT_TotFloat']]);
+    T('PROJWBS', ['wbs_id', 'proj_id', 'obs_id', 'seq_num', 'est_wt', 'proj_node_flag', 'sum_data_flag', 'status_code', 'wbs_short_name', 'wbs_name', 'parent_wbs_id'],
+      (acts.forEach(wbsOf), wbsRows).map((w, k) => [w.id, projId, '', w.seq ?? k, '1', w.node === 'Y' ? 'Y' : 'N', 'N', 'WS_Open', w.short || w.name, w.name || w.short, w.node === 'Y' ? '' : (w.parent || root.id)]));
+    const taskRows = acts.map((a, i) => {
+      const x = r.res[i];
+      const type = a.ms ? (/Mile/.test(a.xtype || '') ? a.xtype : (x.npred ? 'TT_FinMile' : 'TT_Mile')) : (a.xtype && !/Mile|LOE|WBS/.test(a.xtype) ? a.xtype : 'TT_Task');
+      const ip = x.st === 'IP', ns = x.st === 'NS', c = x.st === 'C';
+      const es = c ? a.as : ip ? dd : x.start, ef = x.finish;
+      const ls = c ? '' : day(x.ls), lf = c ? '' : day(Math.max(x.ls, x.lf - 1));
+      return [tid[i], projId, wbsOf(a), clndrId, num(a.pct || 0), 'CP_Phys', type, 'DT_FixedDUR2', ST[x.st], a.id, a.name,
+        c ? '' : num(x.tf * hpd), num(((+a.dur || 0)) * hpd), num((a.ms ? 0 : x.rem) * hpd),
+        a.consDate ? D(a.consDate, /^F|MFO/.test(a.cons) ? '17:00' : '08:00') : '', CT[a.cons] || '',
+        D(c || ip ? (a.as || x.start) : '', '08:00'), D(c ? (a.af || x.finish) : '', '17:00'),
+        D(ns ? x.start : es, '08:00'), D(ef, '17:00'), D(ls, '08:00'), D(lf, '17:00'),
+        D(ns || ip ? (ns ? x.start : dd) : '', '08:00'), D(c ? '' : ef, '17:00'),
+        D(a.bs || x.start, '08:00'), D(a.bf || x.finish, '17:00'), x.crit && !c ? 'Y' : 'N'];
+    });
+    T('TASK', ['task_id', 'proj_id', 'wbs_id', 'clndr_id', 'phys_complete_pct', 'complete_pct_type', 'task_type', 'duration_type', 'status_code', 'task_code', 'task_name',
+      'total_float_hr_cnt', 'target_drtn_hr_cnt', 'remain_drtn_hr_cnt', 'cstr_date', 'cstr_type', 'act_start_date', 'act_end_date',
+      'early_start_date', 'early_end_date', 'late_start_date', 'late_end_date', 'restart_date', 'reend_date', 'target_start_date', 'target_end_date', 'driving_path_flag'], taskRows);
+    const PT = { FS: 'PR_FS', SS: 'PR_SS', FF: 'PR_FF', SF: 'PR_SF' };
+    const predRows = []; let pid = 700000;
+    acts.forEach((a, i) => (a.preds || []).forEach(p => { const j = idx.get(p.id); if (j == null) return; predRows.push([String(pid++), tid[i], tid[j], projId, projId, PT[p.t] || 'PR_FS', num((+p.lag || 0) * hpd)]); }));
+    T('TASKPRED', ['task_pred_id', 'task_id', 'pred_task_id', 'proj_id', 'pred_proj_id', 'pred_type', 'lag_hr_cnt'], predRows);
+    // resources
+    const rs = new Map(); let rid = 600000;
+    acts.forEach(a => String(a.res || '').split(/\s*[,;]\s*/).filter(Boolean).forEach(n => { if (!rs.has(n)) rs.set(n, String(rid++)); }));
+    if (rs.size) {
+      T('RSRC', ['rsrc_id', 'clndr_id', 'rsrc_seq_num', 'rsrc_name', 'rsrc_short_name', 'rsrc_type', 'active_flag', 'def_qty_per_hr', 'cost_qty_type'],
+        [...rs].map(([n, id], k) => [id, clndrId, k, n, n.replace(/\s+/g, '_').slice(0, 20).toUpperCase(), 'RT_Labor', 'Y', '1', 'QT_Hour']));
+      const tr = []; let trid = 500000;
+      acts.forEach((a, i) => {
+        const names = String(a.res || '').split(/\s*[,;]\s*/).filter(Boolean); if (!names.length) return;
+        const cost = (+a.cost || 0) / names.length, remF = 1 - Math.min(100, +a.pct || 0) / 100;
+        names.forEach(n => tr.push([String(trid++), tid[i], projId, rs.get(n), 'RR_Labor', num(cost), num(cost * remF), num((+a.dur || 0) * hpd), num(r.res[i].rem * hpd)]));
+      });
+      T('TASKRSRC', ['taskrsrc_id', 'task_id', 'proj_id', 'rsrc_id', 'rsrc_type', 'target_cost', 'remain_cost', 'target_qty', 'remain_qty'], tr);
+    }
+    lines.push('%E');
+    return lines.join('\r\n') + '\r\n';
+  }
+
+  // Minimal ZIP writer (stored, no compression) for packaging .xer files
+  const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+  function zipStore(files) {
+    const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+    const now = new Date(), dt = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)), dd2 = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate());
+    for (const f of files) {
+      const name = enc.encode(f.name), data = typeof f.data === 'string' ? enc.encode(f.data) : f.data, crc = crc32(data);
+      const h = new DataView(new ArrayBuffer(30));
+      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(8, 0, true); h.setUint16(10, dt, true); h.setUint16(12, dd2, true);
+      h.setUint32(14, crc, true); h.setUint32(18, data.length, true); h.setUint32(22, data.length, true); h.setUint16(26, name.length, true); h.setUint16(28, 0, true);
+      parts.push(new Uint8Array(h.buffer), name, data);
+      const c = new DataView(new ArrayBuffer(46));
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true); c.setUint16(12, dt, true); c.setUint16(14, dd2, true);
+      c.setUint32(16, crc, true); c.setUint32(20, data.length, true); c.setUint32(24, data.length, true); c.setUint16(28, name.length, true); c.setUint32(42, off, true);
+      central.push(new Uint8Array(c.buffer), name);
+      off += 30 + name.length + data.length;
+    }
+    const csize = central.reduce((s, p) => s + p.length, 0);
+    const e = new DataView(new ArrayBuffer(22));
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, csize, true); e.setUint32(16, off, true);
+    const all = parts.concat(central, [new Uint8Array(e.buffer)]);
+    const out = new Uint8Array(all.reduce((s, p) => s + p.length, 0)); let k = 0;
+    for (const p of all) { out.set(p, k); k += p.length; }
+    return out;
+  }
+  // Decode an uploaded file: UTF-8 first, then Windows-1256 (Arabic) as used by P6 on Arabic Windows
+  function decodeBytes(buf) {
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+    catch (e) { try { return new TextDecoder('windows-1256').decode(buf); } catch (e2) { return new TextDecoder('windows-1252').decode(buf); } }
+  }
   function fromMSPXML(text) {
     if (typeof DOMParser === 'undefined') throw new Error('XML import needs a browser.');
     const doc = new DOMParser().parseFromString(text, 'application/xml');
@@ -444,7 +639,7 @@
   Object.assign(SANS, {
     dn, iso, weekday, parseDate, inRamadan, inSummerBan, WEEKS, KSA_HOLIDAYS, RAMADAN, HARD,
     holidaySet, makeCalendar, status, remDur, cpm, parsePreds, predStr,
-    fromCSV, fromXER, fromMSPXML, importSchedule, toCSV,
+    fromCSV, fromXER, fromMSPXML, importSchedule, toCSV, toXER, xerTables, parseClndr, zipStore, crc32, decodeBytes,
   });
   if (typeof module !== 'undefined' && module.exports) module.exports = SANS;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -189,15 +189,26 @@
     a.href = URL.createObjectURL(new Blob([data], { type: 'application/octet-stream' })); a.download = filename;
     document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
+  // .xer is not on the viewer's download list, so in the shared page it is delivered inside a .zip
+  async function saveXer(base, text) {
+    if (state.downloads) { await saveFile(base + '.zip', new Blob([S.zipStore([{ name: base + '.xer', data: text }])])); return; }
+    saveFile(base + '.xer', text);
+  }
+  function xerFor(acts, r, calendar) { return S.toXER(Object.assign({}, state.cur.info, calendar ? { calendar } : {}), acts, r); }
   function readFile(file) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsText(file); }); }
+  function readBytes(file) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(S.decodeBytes(new Uint8Array(r.result))); r.onerror = rej; r.readAsArrayBuffer(file); }); }
   async function importScheduleFile(file) {
-    try { applyImport(S.importSchedule(file.name, await readFile(file)), file.name); }
+    try { applyImport(S.importSchedule(file.name, await readBytes(file)), file.name); }
     catch (e) { state.importMsg = e.message || String(e); render(); }
   }
   function applyImport(res, label) {
     if (!res.activities.length) throw new Error('No activities were found in ' + label + '.');
     const c = state.cur, I = c.info;
-    for (const [k, v] of Object.entries(res.info || {})) if (v && !I[k] && k !== 'plannedFinish') I[k] = v;
+    for (const [k, v] of Object.entries(res.info || {})) if (v && !I[k] && !['plannedFinish', 'calendar', 'xer'].includes(k)) I[k] = v;
+    if (res.info && res.info.dataDate) I.dataDate = res.info.dataDate; // the schedule's own status date is authoritative
+    if (res.info && res.info.name && (!I.name || I.name === 'New project')) I.name = res.info.name;
+    if (res.info && res.info.calendar) I.calendar = res.info.calendar;
+    if (res.info && res.info.xer) I.xer = res.info.xer; else delete I.xer;
     if (!I.start) { const ds = res.activities.map(a => a.as || a.bs).filter(Boolean).sort(); if (ds[0]) I.start = ds[0]; }
     if (!I.contractFinish && res.info && res.info.plannedFinish) I.contractFinish = res.info.plannedFinish;
     c.activities = res.activities;
@@ -213,6 +224,14 @@
     'C1010,Excavation & shoring,4 Substructure,30,12,60,2026-01-29,,2026-01-27,2026-03-02,Earthworks Crew,1400000,,,A1010,\r\n' +
     'C1020,Raft foundation,4 Substructure,25,25,0,,,2026-03-03,2026-03-31,Concrete Crew,2800000,,,C1010FS+3,\r\n' +
     'M1020,Substantial completion,1 Milestones,0,,0,,,2026-03-31,2026-03-31,,,Finish On or Before,2026-04-30,C1020,Yes\r\n';
+
+  /* ---------- theme (light / dark) ---------- */
+  const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  function effectiveTheme() { return document.documentElement.dataset.theme || (mq && mq.matches ? 'dark' : 'light'); }
+  function setTheme(v) { document.documentElement.dataset.theme = v; pref.set('theme', v); paintTheme(); }
+  function paintTheme() { document.querySelectorAll('[data-act="theme"]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === effectiveTheme()))); }
+  { const t = pref.get('theme', null); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; }
+  if (mq && mq.addEventListener) mq.addEventListener('change', paintTheme);
 
   /* ---------- small UI helpers ---------- */
   let toastT;
@@ -235,6 +254,7 @@
 
   /* ---------- chrome ---------- */
   function renderChrome() {
+    paintTheme();
     const sel = $('#projSel');
     const list = state.mode === 'local' ? (state.projects = Local.list()) : state.projects;
     const opts = ['<option value="">— Portfolio —</option>'].concat(list.slice().sort((a, b) => (a.info.code || '').localeCompare(b.info.code || '')).map(p => `<option value="${esc(p.id)}">${esc((p.info.code ? p.info.code + ' · ' : '') + (p.info.name || 'Untitled'))}</option>`));
@@ -386,11 +406,12 @@
           <div id="pasteBox" hidden style="width:100%;display:grid;gap:8px"><textarea id="pasteTxt" rows="6" placeholder="Copy the columns with headers from Excel (Activity ID, Activity Name, Original Duration, Predecessors, …) and paste here"></textarea><div><button class="btn pri" data-act="paste-import">Import pasted rows</button></div></div>
         </div>
         ${state.importMsg ? `<div class="notice">${esc(state.importMsg)}</div>` : ''}
+        ${c.info.xer ? `<div class="notice info">P6 link kept: project <b>${esc(c.info.xer.projShort)}</b>, calendar "${esc(c.info.xer.clndrName)}" (${c.info.xer.hpd} h/day), ${c.info.xer.wbs.length} WBS nodes. XER exports reuse the original P6 IDs, so the file can be imported into P6 to update the existing project.</div>` : ''}
         <p class="hint">Predecessor format: <span class="mono">A1010; A1020SS+5; A1030FF-2</span> (FS is assumed when no type is given). Durations are in working days and dates are YYYY-MM-DD or DD/MM/YYYY.</p>
       </section>
       <section class="panel"><header><div><h3>Activities</h3><p>${rows.length} of ${c.activities.length} shown${A ? ` · forecast finish ${fmt(A.r.finish)}` : ''}</p></div>
         <div class="row"><div class="seg" role="group" aria-label="View">${['table', 'gantt'].map(k => `<button data-act="sview" data-v="${k}" aria-pressed="${state.schedView === k}">${k === 'table' ? 'Table' : 'Gantt'}</button>`).join('')}</div>
-        <button class="btn" data-act="act-new">Add activity</button><button class="btn" data-act="export-csv" ${c.activities.length ? '' : 'disabled'}>Download CSV</button></div></header>
+        <button class="btn" data-act="act-new">Add activity</button><button class="btn" data-act="export-xer" ${c.activities.length ? '' : 'disabled'}>Download XER (P6)</button><button class="btn" data-act="export-csv" ${c.activities.length ? '' : 'disabled'}>Download CSV</button></div></header>
         <div class="row"><input type="search" id="q" placeholder="Search ID, name, WBS, resource" value="${esc(state.q)}" style="max-width:320px">
           <div class="seg" role="group" aria-label="Filter">${filters.map(([k, l]) => `<button data-act="filter" data-v="${k}" aria-pressed="${state.filter === k}">${l}</button>`).join('')}</div></div>
         ${!c.activities.length ? '<div class="empty"><h3>No activities yet</h3><p class="hint">Import a schedule file above or add activities one by one.</p></div>'
@@ -534,7 +555,7 @@
           </div>`).join('')}</div>
       </section>
       ${sel ? `<section class="panel"><header><div><h3>${esc(sel.name)}</h3><p>${esc(sel.desc)}</p></div>
-        ${sel.acts ? `<div class="row"><button class="btn pri" data-act="adopt">Adopt as revised schedule</button><button class="btn" data-act="export-rev">Download revised schedule (CSV)</button></div>` : ''}</header>
+        ${sel.acts ? `<div class="row"><button class="btn pri" data-act="adopt">Adopt as revised schedule</button><button class="btn" data-act="export-rev-xer">Revised schedule (XER)</button><button class="btn" data-act="export-rev">Revised schedule (CSV)</button></div>` : ''}</header>
         <ul class="hint" style="margin:0;padding-left:18px">${sel.assumptions.map(a => `<li>${esc(a)}</li>`).join('')}</ul>
         ${sel.key === 'eot' ? `<div class="list"><div class="item"><span class="chip plain">1</span><span class="d">Identify excusable events from the delay events record (${(I.events || []).length} recorded) and from the Engineer's instructions.</span></div>
           <div class="item"><span class="chip plain">2</span><span class="d">Prepare a Time Impact Analysis: insert fragnets into the last accepted programme and measure the effect on completion.</span></div>
@@ -625,7 +646,7 @@
     const rep = reportData();
     return projectBar() + `
       <section class="panel"><header><div><h3>Narrative report</h3><p>Generated from the current schedule, assessment, risk register and recommended recovery. Download it as HTML (opens in Word for editing) or copy the text into the company template.</p></div>
-        <div class="row"><button class="btn pri" data-act="rep-html">Download report (.html)</button><button class="btn" data-act="rep-copy">Copy as text</button><button class="btn" data-act="export-csv">Schedule (CSV)</button></div></header>
+        <div class="row"><button class="btn pri" data-act="rep-html">Download report (.html)</button><button class="btn" data-act="rep-copy">Copy as text</button><button class="btn" data-act="export-xer">Schedule (XER)</button><button class="btn" data-act="export-csv">Schedule (CSV)</button></div></header>
       </section>
       <article class="report" id="reportBody">${rep.html}${eventsHtml()}</article>`;
   }
@@ -714,6 +735,12 @@
         markDirty(); recalc(); closeOverlay(); render(); break;
       }
       case 'export-csv': saveFile(`${state.cur.info.code || 'schedule'}_schedule_${state.cur.info.dataDate || ''}.csv`, S.toCSV(state.cur.activities, state.A && state.A.r)); break;
+      case 'export-xer': saveXer(`${state.cur.info.code || 'schedule'}_update_${state.cur.info.dataDate || ''}`, xerFor(state.cur.activities, state.A.r)); break;
+      case 'export-rev-xer': {
+        const R = getR(), sel = R.options.find(x => x.key === state.optKey);
+        if (sel && sel.acts) saveXer(`${state.cur.info.code || 'schedule'}_revised_${sel.key}_${state.cur.info.dataDate || ''}`, xerFor(sel.acts, sel.r, sel.calendar)); break;
+      }
+      case 'theme': setTheme(t.dataset.v); break;
       case 'export-json': saveFile(`${state.cur.info.code || 'project'}_backup.json`, JSON.stringify(Object.assign({ format: 'sans-schedule-control/1' }, state.cur), null, 1)); break;
       case 'dcma-csv': {
         const q = v => { const t = String(v ?? ''); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
