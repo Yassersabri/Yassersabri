@@ -481,12 +481,15 @@
         <div class="prog" role="img" aria-label="Planned ${n1(m.planned)} percent, actual ${n1(m.actual)} percent"><i class="p" style="width:${Math.min(100, m.planned || 0)}%"></i><i class="a" style="width:${Math.min(100, m.actual || 0)}%"></i></div>
         <div class="row hint"><span>Actual <b class="mono">${n1(m.actual)}%</b></span><span>Planned <b class="mono">${n1(m.planned)}%</b></span>${m.timeElapsed != null ? `<span>Time elapsed <b class="mono">${n1(m.timeElapsed)}%</b></span>` : ''}</div>
       </section>
-      <section class="panel"><header><div><h3>DCMA 14-point assessment</h3><p>${A.d.rows.filter(x => x.pass === true).length} of ${A.d.rows.filter(x => x.pass !== null).length} applicable checks pass.</p></div></header>
-        <div class="tw"><table><thead><tr><th class="num">#</th><th>Check</th><th>Metric</th><th class="num">Result</th><th>Threshold</th><th>Status</th><th>Why it matters / what to do</th></tr></thead><tbody>
-          ${A.d.rows.map(x => `<tr><td class="num">${x.code}</td><td><b>${esc(x.name)}</b></td><td class="hint">${esc(x.metric)}</td><td class="num">${esc(x.value)}${typeof x.value === 'number' && String(x.threshold).includes('%') ? '%' : ''}</td><td class="mono">${esc(x.threshold)}</td>
+      <section class="panel"><header><div><h3>DCMA 14-point assessment</h3><p>${A.d.rows.filter(x => x.pass === true).length} of ${A.d.rows.filter(x => x.pass !== null).length} applicable checks pass (${A.d.score}%). Total Tasks: <b class="mono">${A.d.totalTasks}</b> incomplete tasks, excluding completed tasks, milestones, LOE and summary activities. Relationships: <b class="mono">${A.d.totalRels}</b> links touching incomplete tasks. Units are working days.</p></div>
+          <button class="btn" data-act="dcma-csv">Download DCMA results (CSV)</button></header>
+        <div class="tw"><table><thead><tr><th class="num">#</th><th>Check</th><th>DCMA criterion</th><th class="num">Count</th><th class="num">Result</th><th>Threshold</th><th>Status</th><th>Why it matters / corrective action</th></tr></thead><tbody>
+          ${A.d.rows.map(x => `<tr class="${x.pass === false ? 'critrow' : ''}"><td class="num">${x.code}</td><td><b>${esc(x.name)}</b></td><td class="hint" style="min-width:200px">${esc(x.metric)}<br><span style="font-size:.76rem">Base: ${esc(x.base)}</span></td><td class="num">${esc(x.count)}</td><td class="num"><b>${esc(x.value)}${x.value === '—' ? '' : x.unit}</b></td><td class="mono">${esc(x.threshold)}</td>
             <td>${x.pass == null ? '<span class="chip">N/A</span>' : x.pass ? '<span class="chip ok">Pass</span>' : '<span class="chip crit">Fail</span>'}</td>
-            <td class="hint">${x.pass === false ? esc(x.why) + ' <b>' + esc(x.fix) + '</b>' : esc(x.why)}${x.items.length && x.pass === false ? `<details><summary>${x.items.length} activities</summary><div class="ids">${esc(x.items.join(', '))}</div></details>` : ''}</td></tr>`).join('')}
+            <td class="hint" style="min-width:260px">${esc(x.why)}${x.pass === false ? ' <b>' + esc(x.fix) + '</b>' : ''}${x.detail.length ? `<details><summary>${x.detail.length} ${x.code >= 2 && x.code <= 4 ? 'relationships' : 'items'}</summary><div class="tw" style="margin-top:6px"><table><tbody>${x.detail.slice(0, 300).map(i => `<tr><td><span class="idc">${esc(i.id)}</span></td><td>${esc(i.name)}</td><td class="mono" style="font-size:.76rem">${esc(i.note)}</td></tr>`).join('')}</tbody></table></div></details>` : ''}</td></tr>`).join('')}
         </tbody></table></div>
+        ${A.d.msHard.length ? `<div class="notice">Outside the DCMA task count: ${A.d.msHard.length} milestone(s) carry hard constraints (${esc(A.d.msHard.map(i => i.id + ' ' + i.note).join(', '))}). Confirm they are contractual key dates.</div>` : ''}
+        ${A.d.totalTasks === 0 ? '<div class="notice info">There are no incomplete tasks, so the percentage checks do not apply.</div>' : ''}
       </section>
       <section class="grid2">
         <div class="panel"><header><h3>Missing information</h3><p>${A.miss.length} gaps extracted</p></header>
@@ -712,6 +715,16 @@
       }
       case 'export-csv': saveFile(`${state.cur.info.code || 'schedule'}_schedule_${state.cur.info.dataDate || ''}.csv`, S.toCSV(state.cur.activities, state.A && state.A.r)); break;
       case 'export-json': saveFile(`${state.cur.info.code || 'project'}_backup.json`, JSON.stringify(Object.assign({ format: 'sans-schedule-control/1' }, state.cur), null, 1)); break;
+      case 'dcma-csv': {
+        const q = v => { const t = String(v ?? ''); return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+        const lines = [['Check #', 'Check', 'DCMA criterion', 'Base', 'Count', 'Result', 'Threshold', 'Status', 'Activity ID', 'Activity name', 'Finding'].join(',')];
+        state.A.d.rows.forEach(x => {
+          const head = [x.code, x.name, x.metric, x.base, x.count, x.value === '—' ? '—' : x.value + x.unit, x.threshold, x.pass == null ? 'N/A' : x.pass ? 'Pass' : 'Fail'];
+          if (!x.detail.length) lines.push(head.concat(['', '', '']).map(q).join(','));
+          x.detail.forEach(i => lines.push(head.concat([i.id, i.name, i.note]).map(q).join(',')));
+        });
+        saveFile(`${state.cur.info.code || 'project'}_DCMA14_${state.cur.info.dataDate || ''}.csv`, lines.join('\r\n')); break;
+      }
       case 'opt': state.optKey = t.dataset.k; render(); break;
       case 'adopt': {
         const R = getR(), sel = R.options.find(x => x.key === state.optKey);

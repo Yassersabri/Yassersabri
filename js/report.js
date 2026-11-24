@@ -71,7 +71,9 @@
     }))]);
 
     S.push(['6. Schedule quality assessment (DCMA 14-point)', `<p>${A.d.rows.filter(x => x.pass === true).length} of ${A.d.rows.filter(x => x.pass !== null).length} applicable checks pass (score ${A.d.score}%).</p>` +
-      table(['#', 'Check', 'Result', 'Threshold', 'Status'], A.d.rows.map(x => [x.code, x.name, x.value + (typeof x.value === 'number' && String(x.threshold).includes('%') ? '%' : ''), x.threshold, x.pass == null ? 'N/A' : x.pass ? 'Pass' : 'Fail']))]);
+      `<p class="small">Basis: DCMA 14-Point Schedule Assessment. Total Tasks = ${A.d.totalTasks} incomplete tasks (excluding completed tasks, milestones, LOE and summary activities); total relationships = ${A.d.totalRels} (links touching incomplete tasks). Durations and float are in working days.</p>` +
+      table(['#', 'Check', 'DCMA criterion', 'Count', 'Result', 'Threshold', 'Status'], A.d.rows.map(x => [x.code, x.name, x.metric, x.count, x.value === '—' ? '—' : x.value + x.unit, x.threshold, x.pass == null ? 'N/A' : x.pass ? 'Pass' : 'Fail'])) +
+      (A.d.rows.some(x => x.pass === false) ? table(['#', 'Failed check', 'Corrective action', 'Activities'], A.d.rows.filter(x => x.pass === false).map(x => [x.code, x.name, x.fix, x.items.slice(0, 12).join(', ') + (x.items.length > 12 ? ` … (+${x.items.length - 12})` : '')])) : '')]);
 
     S.push(['7. Missing information and data gaps', A.miss.length ? table(['Severity', 'Area', 'Item', 'Detail'], A.miss.map(x => [x.severity, x.area, x.item, x.detail + (x.ids.length ? ` (${x.ids.slice(0, 8).join(', ')}${x.ids.length > 8 ? '…' : ''})` : '')])) : '<p>No missing information was detected.</p>']);
 

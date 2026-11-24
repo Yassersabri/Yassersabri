@@ -47,87 +47,134 @@
     };
   }
 
-  /* ---------- DCMA 14-point assessment ---------- */
+  /* ---------- DCMA 14-point assessment ----------
+   * Follows the DCMA 14-Point Schedule Assessment (DCMA EVMS Program Analysis Pamphlet).
+   * "Total Tasks" = incomplete tasks, excluding completed tasks, milestones (zero duration),
+   * level-of-effort and summary activities (LOE/summary are dropped at import).
+   * Relationship metrics count the logic links that touch at least one incomplete task.
+   * All durations and float are in working days.
+   */
+  const DCMA_SPEC = [
+    { code: 1, name: 'Logic', metric: 'Incomplete tasks missing a predecessor and/or successor', threshold: '≤ 5%', limit: 5, kind: 'pctMax', base: 'Total Tasks',
+      why: 'Tasks without a predecessor or successor do not move when other work slips, so the forecast hides delay.', fix: 'Give every task at least one predecessor and one successor; tie the network to the start and completion milestones.' },
+    { code: 2, name: 'Leads', metric: 'Relationships with negative lag', threshold: '0%', limit: 0, kind: 'pctMax', base: 'Total relationships',
+      why: 'A lead lets a successor start before its predecessor finishes, which distorts the critical path and float.', fix: 'Replace leads with SS/FF relationships or split the predecessor into parts.' },
+    { code: 3, name: 'Lags', metric: 'Relationships with positive lag', threshold: '≤ 5%', limit: 5, kind: 'pctMax', base: 'Total relationships',
+      why: 'Lags hide work (curing, reviews, approvals) that cannot be statused or progressed.', fix: 'Convert lags into real activities, for example "Concrete curing" or "Consultant review".' },
+    { code: 4, name: 'Relationship types', metric: 'Finish-to-Start relationships', threshold: '≥ 90%', limit: 90, kind: 'pctMin', base: 'Total relationships',
+      why: 'Heavy use of SS/FF/SF relationships makes the critical path hard to trace and to defend in a delay claim.', fix: 'Use FS logic by default; keep SS/FF only where a genuine overlap exists. Avoid SF.' },
+    { code: 5, name: 'Hard constraints', metric: 'Tasks with MSO, MFO, SNLT or FNLT constraints', threshold: '≤ 5%', limit: 5, kind: 'pctMax', base: 'Total Tasks',
+      why: 'Hard constraints override logic and create artificial float or negative float.', fix: 'Replace hard constraints with logic; use soft constraints (SNET/FNET) only for external dates.' },
+    { code: 6, name: 'High float', metric: 'Tasks with total float > 44 working days', threshold: '≤ 5%', limit: 5, kind: 'pctMax', base: 'Total Tasks',
+      why: 'Very high float usually means missing successors or logic that is not tied to completion.', fix: 'Review the successors of high-float tasks and tie them to the handover milestone.' },
+    { code: 7, name: 'Negative float', metric: 'Tasks with total float < 0', threshold: '0%', limit: 0, kind: 'pctMax', base: 'Total Tasks',
+      why: 'Negative float means the forecast misses the contract or constraint date.', fix: 'Prepare a recovery schedule, or a Time Impact Analysis for an Extension of Time.' },
+    { code: 8, name: 'High duration', metric: 'Tasks with baseline duration > 44 working days', threshold: '≤ 5%', limit: 5, kind: 'pctMax', base: 'Total Tasks',
+      why: 'Long tasks cannot be measured accurately in a monthly update.', fix: 'Break long tasks down by area, floor or zone to 44 working days or less.' },
+    { code: 9, name: 'Invalid dates', metric: 'Forecast dates before, or actual dates after, the data date', threshold: '0%', limit: 0, kind: 'pctMax', base: 'Total Tasks',
+      why: 'Forecasts in the past or actuals in the future mean the update was not statused correctly.', fix: 'Correct actual dates and move all remaining work to on or after the data date.' },
+    { code: 10, name: 'Resources', metric: 'Tasks (duration ≥ 1 day) without resources or cost', threshold: '0%', limit: 0, kind: 'pctMax', base: 'Total Tasks',
+      why: 'Unloaded tasks cannot be checked for manpower, productivity or cash-flow feasibility.', fix: 'Assign labour hours, crews or cost to every task.' },
+    { code: 11, name: 'Missed tasks', metric: 'Tasks due by the data date that finished late or are not finished', threshold: '≤ 5%', limit: 5, kind: 'pctMax', base: 'Tasks with baseline finish ≤ data date',
+      why: 'Missed tasks show execution falling behind the baseline plan.', fix: 'Analyse the root causes (approvals, manpower, materials) and recover the backlog.' },
+    { code: 12, name: 'Critical path test', metric: 'A delay inserted on the critical path moves the finish by the same amount', threshold: 'Pass', limit: null, kind: 'test', base: 'First critical task',
+      why: 'If an inserted delay does not move the finish one-for-one, the critical path is broken by constraints, open ends or lags.', fix: 'Remove hard constraints and open ends until one continuous path runs from the data date to completion.' },
+    { code: 13, name: 'CPLI', metric: 'Critical Path Length Index = (CPL + total float) / CPL', threshold: '≥ 0.95', limit: 0.95, kind: 'ratioMin', base: 'Remaining critical path',
+      why: 'CPLI below 0.95 means the remaining critical path is unlikely to meet the required finish.', fix: 'Assess acceleration: crashing, fast-tracking or extended working hours.' },
+    { code: 14, name: 'BEI', metric: 'Baseline Execution Index = tasks completed / tasks due', threshold: '≥ 0.95', limit: 0.95, kind: 'ratioMin', base: 'Tasks with baseline finish ≤ data date',
+      why: 'BEI below 0.95 means fewer tasks are being completed than the baseline planned.', fix: 'Increase production on overdue tasks and clear blockers in a 3-week look-ahead.' },
+  ];
+  const CP_TEST_DAYS = 600;
+
   function dcma(project, acts, r, m) {
-    const inc = r.res.filter(x => x.st !== 'C');
-    const incTasks = inc.filter(x => !acts[x.i].ms);
-    const nInc = Math.max(1, inc.length);
-    const rels = []; acts.forEach(a => (a.preds || []).forEach(p => rels.push({ a: a.id, ...p })));
-    const nRel = Math.max(1, rels.length);
-    // first / last activities are allowed one open end
-    const firstIds = new Set(r.res.filter(x => x.npred === 0).sort((a, b) => a.es - b.es).slice(0, 1).map(x => x.id));
-    const lastIds = new Set(r.res.filter(x => x.nsucc === 0).sort((a, b) => b.ef - a.ef).slice(0, 1).map(x => x.id));
-    const openEnds = inc.filter(x => (x.npred === 0 && !firstIds.has(x.id)) || (x.nsucc === 0 && !lastIds.has(x.id)));
-    const leads = rels.filter(x => x.lag < 0);
-    const lags = rels.filter(x => x.lag > 0);
-    const nonFS = rels.filter(x => (x.t || 'FS') !== 'FS');
-    const hard = inc.filter(x => SANS.HARD.has(acts[x.i].cons));
-    const highF = inc.filter(x => x.tf > 44);
-    const negF = inc.filter(x => x.tf < 0);
-    const highD = incTasks.filter(x => x.rem > 44);
-    const invalid = r.res.filter(x => {
-      const a = acts[x.i];
-      return (dn(a.as) > r.ddDay) || (dn(a.af) > r.ddDay) || (x.st === 'NS' && dn(x.start) < r.ddDay) || (x.st === 'IP' && dn(x.finish) < r.ddDay);
+    const A = i => acts[i];
+    const isTask = x => !A(x.i).ms && !(x.st === 'C');
+    const tasks = r.res.filter(isTask);                       // DCMA "Total Tasks"
+    const incSet = new Set(r.res.filter(x => x.st !== 'C').map(x => x.i));
+    const N = tasks.length;
+    const rels = [];
+    r.pred.forEach(list => list.forEach(rel => { if (incSet.has(rel.from) || incSet.has(rel.to)) rels.push(rel); }));
+    const R = rels.length;
+    const relTxt = rel => `${A(rel.from).id} → ${A(rel.to).id} ${rel.t}${rel.lag ? (rel.lag > 0 ? '+' : '') + rel.lag : ''}`;
+    const item = (x, note) => ({ id: A(x.i).id, name: A(x.i).name, note });
+
+    const c1 = tasks.filter(x => x.npred === 0 || x.nsucc === 0).map(x => item(x, x.npred === 0 && x.nsucc === 0 ? 'No predecessor and no successor' : x.npred === 0 ? 'No predecessor' : 'No successor'));
+    const c2 = rels.filter(x => x.lag < 0).map(x => ({ id: A(x.to).id, name: A(x.to).name, note: relTxt(x) }));
+    const c3 = rels.filter(x => x.lag > 0).map(x => ({ id: A(x.to).id, name: A(x.to).name, note: relTxt(x) }));
+    const nonFS = rels.filter(x => x.t !== 'FS').map(x => ({ id: A(x.to).id, name: A(x.to).name, note: relTxt(x) }));
+    const c5 = tasks.filter(x => SANS.HARD.has(A(x.i).cons)).map(x => item(x, `${A(x.i).cons} ${A(x.i).consDate || ''}`.trim()));
+    const c6 = tasks.filter(x => x.tf > 44).map(x => item(x, `TF ${x.tf}`));
+    const c7 = tasks.filter(x => x.tf < 0).map(x => item(x, `TF ${x.tf}`));
+    const blDur = x => {
+      const a = A(x.i), bs = dn(a.bs), bf = dn(a.bf);
+      if (bs != null && bf != null) return r.cal.floorIdx(bf) + 1 - r.cal.ceilIdx(bs);
+      return +a.dur || 0;
+    };
+    const c8 = tasks.filter(x => blDur(x) > 44).map(x => item(x, `Baseline duration ${blDur(x)} wd${A(x.i).bs ? '' : ' (original duration, no baseline)'}`));
+    const c9 = [];
+    r.res.forEach(x => {
+      if (A(x.i).ms && x.st === 'C') return;
+      const a = A(x.i), why = [];
+      if (dn(a.as) > r.ddDay) why.push('actual start after data date');
+      if (dn(a.af) > r.ddDay) why.push('actual finish after data date');
+      if (x.st === 'NS' && dn(x.start) < r.ddDay) why.push('forecast start before data date');
+      if (x.st !== 'C' && dn(x.finish) < r.ddDay) why.push('forecast finish before data date');
+      if (why.length) c9.push(item(x, why.join('; ')));
     });
-    const noRes = incTasks.filter(x => !String(acts[x.i].res || '').trim() && !(+acts[x.i].cost > 0));
-    // Critical path test: add delay to first critical activity; finish should slip by the same amount
-    let cpTest = false;
-    const firstCrit = r.critical.slice().sort((a, b) => a.es - b.es)[0];
-    if (firstCrit) {
-      const test = acts.map((a, i) => i === firstCrit.i ? Object.assign({}, a, { rem: SANS.remDur(a) + 60, dur: (+a.dur || 0) + 60, ms: false }) : a);
-      const t = SANS.cpm(project, test);
-      cpTest = t.maxEF - r.maxEF >= 55;
+    const c10 = tasks.filter(x => (+A(x.i).dur || x.rem) >= 1 && !String(A(x.i).res || '').trim() && !(+A(x.i).cost > 0)).map(x => item(x, 'No resource or cost'));
+    // 11 & 14: baseline-due tasks (milestones excluded)
+    const due = r.res.filter(x => !A(x.i).ms && dn(A(x.i).bf) != null && dn(A(x.i).bf) <= r.ddDay);
+    const c11 = due.filter(x => x.st !== 'C' || dn(A(x.i).af) > dn(A(x.i).bf)).map(x => item(x, x.st !== 'C' ? `Not finished (baseline finish ${A(x.i).bf})` : `Finished ${A(x.i).af}, baseline ${A(x.i).bf}`));
+    const completed = r.res.filter(x => !A(x.i).ms && x.st === 'C' && (dn(A(x.i).af) == null || dn(A(x.i).af) <= r.ddDay)).length;
+    const bei = due.length ? completed / due.length : null;
+    // 12: critical path test
+    const crit = r.critical.slice().sort((a, b) => a.es - b.es || a.ef - b.ef);
+    const probe = crit.find(x => !A(x.i).ms) || crit[0];
+    let cpSlip = null;
+    // project completion activity: latest-finishing incomplete activity without successors
+    const ends = r.res.filter(x => x.st !== 'C' && x.nsucc === 0).sort((a, b) => b.ef - a.ef || (A(b.i).ms ? 1 : 0) - (A(a.i).ms ? 1 : 0));
+    const endAct = ends[0] || r.res.slice().sort((a, b) => b.ef - a.ef)[0];
+    if (probe && endAct) {
+      const test = acts.map((a, i) => i === probe.i ? Object.assign({}, a, { rem: SANS.remDur(a) + CP_TEST_DAYS, dur: (+a.dur || 0) + CP_TEST_DAYS, ms: false }) : a);
+      cpSlip = SANS.cpm(project, test).res[endAct.i].ef - endAct.ef;
     }
-    const L = (code, name, metric, value, threshold, pass, items, why, fix) => ({ code, name, metric, value, threshold, pass, items: (items || []).map(x => x.id ?? x), why, fix });
-    const rows = [
-      L(1, 'Logic', 'Open ends', pct(openEnds.length, nInc), '≤ 5%', pct(openEnds.length, nInc) <= 5, openEnds,
-        'Activities without a predecessor or successor do not move when other work slips, so the forecast hides delay.',
-        'Link every activity into the network with at least one predecessor and one successor.'),
-      L(2, 'Leads', 'Negative lags', leads.length, '0', leads.length === 0, leads.map(x => x.a),
-        'Negative lag forecasts a successor before its predecessor finishes and distorts the critical path.',
-        'Replace negative lags with SS/FF relationships or split the activities.'),
-      L(3, 'Lags', 'Positive lags', pct(lags.length, nRel), '≤ 5%', pct(lags.length, nRel) <= 5, lags.map(x => x.a),
-        'Lags represent unmodelled work such as curing or approvals that cannot be progressed or statused.',
-        'Convert long lags into real activities (e.g. "Concrete curing", "Consultant review").'),
-      L(4, 'Relationship types', 'Finish-to-Start', pct(rels.length - nonFS.length, nRel), '≥ 90%', pct(rels.length - nonFS.length, nRel) >= 90, nonFS.map(x => x.a),
-        'Heavy use of SS/FF/SF relationships makes the path difficult to trace and to defend in a delay claim.',
-        'Use FS logic by default; keep SS/FF only where a true overlap exists.'),
-      L(5, 'Hard constraints', 'Mandatory / "no later than" dates', pct(hard.length, nInc), '≤ 5%', pct(hard.length, nInc) <= 5, hard,
-        'Hard constraints override the logic and create artificial float or negative float.',
-        'Replace hard constraints with logic and use SNET constraints only for external access dates.'),
-      L(6, 'High float', 'Total float > 44 days', pct(highF.length, nInc), '≤ 5%', pct(highF.length, nInc) <= 5, highF,
-        'Very high float usually means missing successors or a missing logic tie to the completion milestone.',
-        'Review successors of high-float activities and tie them to the handover milestone.'),
-      L(7, 'Negative float', 'Total float < 0', negF.length, '0', negF.length === 0, negF,
-        'Negative float means the forecast finish is after the contract or constraint date.',
-        'Prepare a recovery schedule or submit an Extension of Time with the delay analysis.'),
-      L(8, 'High duration', 'Remaining duration > 44 days', pct(highD.length, Math.max(1, incTasks.length)), '≤ 5%', pct(highD.length, Math.max(1, incTasks.length)) <= 5, highD,
-        'Long activities cannot be measured accurately in a monthly update.',
-        'Break long activities into areas, floors or zones of 44 working days or less.'),
-      L(9, 'Invalid dates', 'Actuals after / forecasts before data date', invalid.length, '0', invalid.length === 0, invalid,
-        'Actual dates in the future or forecast dates in the past mean the update was not statused correctly.',
-        'Correct actual dates and move unfinished work to after the data date.'),
-      L(10, 'Resources', 'Incomplete tasks without resources or cost', pct(noRes.length, Math.max(1, incTasks.length)), '0%', noRes.length === 0, noRes,
-        'Unloaded activities cannot be checked for manpower, productivity or cash-flow feasibility.',
-        'Assign the crew, subcontractor or cost to every activity.'),
-      L(11, 'Missed tasks', 'Late against baseline', m.dueBL ? pct(m.missed, m.dueBL) : '—', '≤ 5%', m.dueBL ? pct(m.missed, m.dueBL) <= 5 : null, m.missedIds,
-        'Tasks finishing later than their baseline finish show execution falling behind the plan.',
-        'Analyse the missed tasks for root causes such as approvals, manpower or materials.'),
-      L(12, 'Critical path test', 'Delay propagates to finish', cpTest ? 'Yes' : 'No', 'Pass', cpTest, cpTest ? [] : (firstCrit ? [firstCrit] : []),
-        'If a delay to a critical activity does not move the finish, the critical path is broken by constraints or open ends.',
-        'Remove hard constraints and open ends until a continuous path runs from the data date to completion.'),
-      L(13, 'CPLI', 'Critical Path Length Index', m.cpli != null ? m.cpli.toFixed(2) : '—', '≥ 0.95', m.cpli != null ? m.cpli >= 0.95 : null, [],
-        'CPLI below 0.95 means the remaining critical path is unlikely to meet the contract finish without recovery.',
-        'Assess recovery options such as crashing, fast-tracking and extended working hours.'),
-      L(14, 'BEI', 'Baseline Execution Index', m.bei != null ? m.bei.toFixed(2) : '—', '≥ 0.95', m.bei != null ? m.bei >= 0.95 : null, [],
-        'BEI below 0.95 means fewer activities are being completed than the baseline planned.',
-        'Increase production rates on the activities that are due and remove blockers.'),
-    ];
+    const cpPass = probe ? cpSlip === CP_TEST_DAYS : null;
+    // 13: CPLI against contract finish, else baseline finish
+    let cpli = m.cpli, cpliBasis = 'contract completion date';
+    if (cpli == null && m.blFinish) {
+      const tf = r.cal.floorIdx(dn(m.blFinish)) + 1 - r.maxEF;
+      const cpl = Math.max(1, r.maxEF - r.dd);
+      cpli = (cpl + tf) / cpl; cpliBasis = 'baseline finish';
+    }
+
+    const pc = (n, d) => d ? Math.round(n / d * 1000) / 10 : 0;
+    const res = {
+      1: { n: c1.length, d: N, items: c1 }, 2: { n: c2.length, d: R, items: c2 }, 3: { n: c3.length, d: R, items: c3 },
+      4: { n: R - nonFS.length, d: R, items: nonFS }, 5: { n: c5.length, d: N, items: c5 }, 6: { n: c6.length, d: N, items: c6 },
+      7: { n: c7.length, d: N, items: c7 }, 8: { n: c8.length, d: N, items: c8 }, 9: { n: c9.length, d: N, items: c9 },
+      10: { n: c10.length, d: N, items: c10 }, 11: { n: c11.length, d: due.length, items: c11 },
+      12: { n: cpSlip, d: CP_TEST_DAYS, items: probe && endAct ? [item(probe, `${CP_TEST_DAYS} wd inserted here`), item(endAct, `Completion activity moved ${cpSlip} wd`)] : [] },
+      13: { n: cpli, d: null, items: [] }, 14: { n: completed, d: due.length, items: [] },
+    };
+    const rows = DCMA_SPEC.map(s => {
+      const x = res[s.code];
+      let value, pass;
+      if (s.kind === 'pctMax' || s.kind === 'pctMin') {
+        if (!x.d) { value = '—'; pass = null; }
+        else { value = pc(x.n, x.d); pass = s.kind === 'pctMax' ? value <= s.limit : value >= s.limit; }
+      } else if (s.kind === 'test') { value = cpPass == null ? '—' : cpPass ? 'Pass' : 'Fail'; pass = cpPass; }
+      else if (s.code === 13) { value = cpli == null ? '—' : +cpli.toFixed(2); pass = cpli == null ? null : cpli >= s.limit; }
+      else { value = bei == null ? '—' : +bei.toFixed(2); pass = bei == null ? null : bei >= s.limit; }
+      const count = s.code === 12 ? (cpSlip == null ? '—' : `${cpSlip} of ${CP_TEST_DAYS} wd`) : s.code === 13 ? (cpli == null ? '—' : `CPL ${Math.max(1, r.maxEF - r.dd)} wd (${cpliBasis === "baseline finish" ? "vs baseline" : "vs contract"})`) : `${x.n} of ${x.d}`;
+      const unit = s.kind === 'pctMax' || s.kind === 'pctMin' ? '%' : '';
+      return Object.assign({}, s, { value, unit, pass, count, detail: x.items, items: [...new Set(x.items.map(i => i.id))] });
+    });
     const scored = rows.filter(x => x.pass !== null);
     const score = scored.length ? Math.round(scored.filter(x => x.pass).length / scored.length * 100) : 0;
-    return { rows, score, openEnds, negF, hard, highD };
+    const toRes = list => list.map(i => r.res[acts.findIndex(a => a.id === i.id)]).filter(Boolean);
+    const msHard = r.res.filter(x => x.st !== 'C' && A(x.i).ms && SANS.HARD.has(A(x.i).cons)).map(x => item(x, `${A(x.i).cons} ${A(x.i).consDate || ''}`.trim()));
+    return { rows, score, msHard, totalTasks: N, totalRels: R, openEnds: toRes(c1), negF: toRes(c7), hard: toRes(c5), highD: toRes(c8), bei, cpli };
   }
-
   /* ---------- Missing information extraction ---------- */
   function missing(project, acts, r) {
     const out = [];
@@ -279,6 +326,7 @@
     const r = SANS.cpm(project, acts);
     const m = metrics(project, acts, r);
     const d = dcma(project, acts, r, m);
+    if (d.bei != null) m.bei = d.bei; // DCMA definition (tasks only)
     const miss = missing(project, acts, r);
     const rk = risks(project, acts, r, m, d);
     const recs = recommendations(project, acts, r, m, d, miss, rk);
@@ -287,5 +335,5 @@
     return { r, m, d, miss, rk, recs, quality, health };
   }
 
-  Object.assign(SANS, { metrics, dcma, missing, risks, recommendations, assess, KW });
+  Object.assign(SANS, { DCMA_SPEC, metrics, dcma, missing, risks, recommendations, assess, KW });
 })(typeof window !== 'undefined' ? window : globalThis);
